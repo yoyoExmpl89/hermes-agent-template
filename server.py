@@ -988,6 +988,8 @@ async def _ws_pump_upstream_to_client(
 
 
 async def ws_proxy(websocket: WebSocket) -> None:
+
+  
     """Reverse-proxy a single WebSocket from browser → hermes dashboard.
 
     Order matters: connect upstream BEFORE accepting the client. If hermes
@@ -1003,11 +1005,27 @@ async def ws_proxy(websocket: WebSocket) -> None:
          exits, etc.), cancel the other task and close both sockets
     """
     # 1. Edge auth.
-    if not _is_authenticated(websocket):
-        # Close before accept — browser sees the handshake fail (expected
-        # for unauthenticated calls).
+
+
+    GATEWAY_TOKEN = os.environ.get("GATEWAY_TOKEN", "")
+    
+    def _is_token_authenticated(ws: WebSocket) -> bool:
+        if not GATEWAY_TOKEN:
+            return False
+        # Check Authorization header: "Bearer <token>"
+        auth = ws.headers.get("authorization", "")
+        if auth.startswith("Bearer ") and auth[7:] == GATEWAY_TOKEN:
+            return True
+        # Check query param: ?token=<token>
+        if ws.query_params.get("token") == GATEWAY_TOKEN:
+            return True
+        return False
+
+    if not _is_authenticated(websocket) and not _is_token_authenticated(websocket):
         await websocket.close(code=4401)
         return
+    
+
 
     # 2. Build upstream URL preserving the SPA's path + query (the query
     #    contains the hermes session token + channel id).
