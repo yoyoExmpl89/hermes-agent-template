@@ -1007,21 +1007,23 @@ async def ws_proxy(websocket: WebSocket) -> None:
     # 1. Edge auth.
 
 
-    GATEWAY_TOKEN = os.environ.get("GATEWAY_TOKEN", "")
-    
-    def _is_token_authenticated(ws: WebSocket) -> bool:
-        if not GATEWAY_TOKEN:
+"""Reverse-proxy a single WebSocket from browser → hermes dashboard.
+    ...
+    """
+    # 1. Edge auth — cookie (browser) OR Bearer token (external clients like Claw3D).
+    _GATEWAY_TOKEN = os.environ.get("GATEWAY_TOKEN", "")
+
+    def _is_token_authed(ws: WebSocket) -> bool:
+        if not _GATEWAY_TOKEN:
             return False
-        # Check Authorization header: "Bearer <token>"
         auth = ws.headers.get("authorization", "")
-        if auth.startswith("Bearer ") and auth[7:] == GATEWAY_TOKEN:
+        if auth.startswith("Bearer ") and auth[7:] == _GATEWAY_TOKEN:
             return True
-        # Check query param: ?token=<token>
-        if ws.query_params.get("token") == GATEWAY_TOKEN:
+        if ws.query_params.get("token") == _GATEWAY_TOKEN:
             return True
         return False
 
-    if not _is_authenticated(websocket) and not _is_token_authenticated(websocket):
+    if not _is_authenticated(websocket) and not _is_token_authed(websocket):
         await websocket.close(code=4401)
         return
     
