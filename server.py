@@ -60,6 +60,10 @@ HERMES_DASHBOARD_HOST = "127.0.0.1"
 HERMES_DASHBOARD_PORT = int(os.environ.get("HERMES_DASHBOARD_PORT", "9119"))
 HERMES_DASHBOARD_URL = f"http://{HERMES_DASHBOARD_HOST}:{HERMES_DASHBOARD_PORT}"
 
+# Find what port hermes gateway listens on
+HERMES_GATEWAY_HOST = "127.0.0.1"
+HERMES_GATEWAY_PORT = int(os.environ.get("HERMES_GATEWAY_PORT", "8765"))  # adjust to actual port
+
 # Mirror dashboard-ref-only/auth_proxy.py: strip only `host` (httpx sets it)
 # and `transfer-encoding` (httpx recomputes it from the body). Keep everything
 # else — notably `authorization`, because the SPA uses Bearer tokens against
@@ -987,30 +991,106 @@ async def _ws_pump_upstream_to_client(
         return
 
 
-async def ws_proxy(websocket: WebSocket) -> None:
+# async def ws_proxy(websocket: WebSocket) -> None:
 
   
-    """Reverse-proxy a single WebSocket from browser → hermes dashboard.
+#     """Reverse-proxy a single WebSocket from browser → hermes dashboard.
 
-    Order matters: connect upstream BEFORE accepting the client. If hermes
-    is wedged or rejects the upgrade, we close the client with a meaningful
-    code instead of accepting and then dropping silently.
+#     Order matters: connect upstream BEFORE accepting the client. If hermes
+#     is wedged or rejects the upgrade, we close the client with a meaningful
+#     code instead of accepting and then dropping silently.
 
-    Connection lifecycle:
-      1. Verify edge cookie auth → 4401 close on failure
-      2. Open upstream WS with bounded open_timeout → 1011 on failure
-      3. Accept client
-      4. Spawn two pump tasks (bidirectional byte forwarding)
-      5. When either direction ends (client navigates away, upstream PTY
-         exits, etc.), cancel the other task and close both sockets
-    """
-    # 1. Edge auth.
+#     Connection lifecycle:
+#       1. Verify edge cookie auth → 4401 close on failure
+#       2. Open upstream WS with bounded open_timeout → 1011 on failure
+#       3. Accept client
+#       4. Spawn two pump tasks (bidirectional byte forwarding)
+#       5. When either direction ends (client navigates away, upstream PTY
+#          exits, etc.), cancel the other task and close both sockets
+#     """
+#     # 1. Edge auth.
 
 
-"""Reverse-proxy a single WebSocket from browser → hermes dashboard.
-    ...
-    """
-    # 1. Edge auth — cookie (browser) OR Bearer token (external clients like Claw3D).
+# """Reverse-proxy a single WebSocket from browser → hermes dashboard.
+#     ...
+#     """
+#     # 1. Edge auth — cookie (browser) OR Bearer token (external clients like Claw3D).
+#     _GATEWAY_TOKEN = os.environ.get("GATEWAY_TOKEN", "")
+
+#     def _is_token_authed(ws: WebSocket) -> bool:
+#         if not _GATEWAY_TOKEN:
+#             return False
+#         auth = ws.headers.get("authorization", "")
+#         if auth.startswith("Bearer ") and auth[7:] == _GATEWAY_TOKEN:
+#             return True
+#         if ws.query_params.get("token") == _GATEWAY_TOKEN:
+#             return True
+#         return False
+
+#     if not _is_authenticated(websocket) and not _is_token_authed(websocket):
+#         await websocket.close(code=4401)
+#         return
+    
+
+
+#     # 2. Build upstream URL preserving the SPA's path + query (the query
+#     #    contains the hermes session token + channel id).
+#     path = websocket.url.path
+#     qs = websocket.url.query
+#     upstream_url = f"ws://{HERMES_DASHBOARD_HOST}:{HERMES_DASHBOARD_PORT}{path}"
+#     if qs:
+#         upstream_url = f"{upstream_url}?{qs}"
+
+#     try:
+#         upstream = await websockets.connect(
+#             upstream_url,
+#             open_timeout=5,
+#             # Don't forward client cookies/headers — hermes WS auth is
+#             # purely token-based via the URL, and forwarding random
+#             # headers risks future upstream surprises.
+#         )
+#     except (asyncio.TimeoutError, OSError, websockets.exceptions.WebSocketException) as e:
+#         # Hermes dashboard down, restarting, or rejected the upgrade
+#         # (e.g. bad/missing session token).
+#         print(f"[ws-proxy] upstream connect failed for {path}: {e!r}", flush=True)
+#         # 1011 = internal error; client SPA will surface a generic close.
+#         await websocket.close(code=1011)
+#         return
+
+#     # 3. Both sides ready — accept and start pumping.
+#     await websocket.accept()
+
+#     pump_in = asyncio.create_task(_ws_pump_client_to_upstream(websocket, upstream))
+#     pump_out = asyncio.create_task(_ws_pump_upstream_to_client(upstream, websocket))
+
+#     try:
+#         # First side to finish wins; cancel the other.
+#         done, pending = await asyncio.wait(
+#             (pump_in, pump_out),
+#             return_when=asyncio.FIRST_COMPLETED,
+#         )
+#         for task in pending:
+#             task.cancel()
+#             try:
+#                 await task
+#             except (asyncio.CancelledError, Exception):
+#                 pass
+#     finally:
+#         # websockets.connect() outside `async with` doesn't auto-close;
+#         # do it explicitly. Same for the client side if still open.
+#         try:
+#             await upstream.close()
+#         except Exception:
+#             pass
+#         if websocket.client_state == WebSocketState.CONNECTED:
+#             try:
+#                 await websocket.close()
+#             except Exception:
+#                 pass
+
+
+async def ws_gateway(websocket: WebSocket) -> None:
+    """Proxy /gateway WebSocket connections from Claw3D to the hermes gateway subprocess."""
     _GATEWAY_TOKEN = os.environ.get("GATEWAY_TOKEN", "")
 
     def _is_token_authed(ws: WebSocket) -> bool:
@@ -1023,44 +1103,30 @@ async def ws_proxy(websocket: WebSocket) -> None:
             return True
         return False
 
-    if not _is_authenticated(websocket) and not _is_token_authed(websocket):
+    allow_all = os.environ.get("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("1", "true", "yes")
+
+    if not allow_all and not _is_authenticated(websocket) and not _is_token_authed(websocket):
         await websocket.close(code=4401)
         return
-    
 
-
-    # 2. Build upstream URL preserving the SPA's path + query (the query
-    #    contains the hermes session token + channel id).
-    path = websocket.url.path
     qs = websocket.url.query
-    upstream_url = f"ws://{HERMES_DASHBOARD_HOST}:{HERMES_DASHBOARD_PORT}{path}"
+    upstream_url = f"ws://{HERMES_GATEWAY_HOST}:{HERMES_GATEWAY_PORT}/gateway"
     if qs:
         upstream_url = f"{upstream_url}?{qs}"
 
     try:
-        upstream = await websockets.connect(
-            upstream_url,
-            open_timeout=5,
-            # Don't forward client cookies/headers — hermes WS auth is
-            # purely token-based via the URL, and forwarding random
-            # headers risks future upstream surprises.
-        )
-    except (asyncio.TimeoutError, OSError, websockets.exceptions.WebSocketException) as e:
-        # Hermes dashboard down, restarting, or rejected the upgrade
-        # (e.g. bad/missing session token).
-        print(f"[ws-proxy] upstream connect failed for {path}: {e!r}", flush=True)
-        # 1011 = internal error; client SPA will surface a generic close.
+        upstream = await websockets.connect(upstream_url, open_timeout=5)
+    except Exception as e:
+        print(f"[ws-gateway] upstream connect failed: {e!r}", flush=True)
         await websocket.close(code=1011)
         return
 
-    # 3. Both sides ready — accept and start pumping.
     await websocket.accept()
 
-    pump_in = asyncio.create_task(_ws_pump_client_to_upstream(websocket, upstream))
+    pump_in  = asyncio.create_task(_ws_pump_client_to_upstream(websocket, upstream))
     pump_out = asyncio.create_task(_ws_pump_upstream_to_client(upstream, websocket))
 
     try:
-        # First side to finish wins; cancel the other.
         done, pending = await asyncio.wait(
             (pump_in, pump_out),
             return_when=asyncio.FIRST_COMPLETED,
@@ -1072,8 +1138,6 @@ async def ws_proxy(websocket: WebSocket) -> None:
             except (asyncio.CancelledError, Exception):
                 pass
     finally:
-        # websockets.connect() outside `async with` doesn't auto-close;
-        # do it explicitly. Same for the client side if still open.
         try:
             await upstream.close()
         except Exception:
@@ -1083,7 +1147,6 @@ async def ws_proxy(websocket: WebSocket) -> None:
                 await websocket.close()
             except Exception:
                 pass
-
 
 ANY_METHOD = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
 
@@ -1123,6 +1186,7 @@ routes = [
     WebSocketRoute("/api/pty",                  ws_proxy),
     WebSocketRoute("/api/ws",                   ws_proxy),
     WebSocketRoute("/api/events",               ws_proxy),
+    WebSocketRoute("/gateway", ws_gateway),
 
     # Root: redirect to /setup if unconfigured, otherwise proxy the dashboard.
     Route("/",                                  route_root,          methods=ANY_METHOD),
