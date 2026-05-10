@@ -1087,7 +1087,65 @@ async def _ws_pump_upstream_to_client(
 #                 await websocket.close()
 #             except Exception:
 #                 pass
+async def ws_gateway_proxy(websocket: WebSocket) -> None:
+    """Proxy /gateway WebSocket connections from Claw3D to the hermes gateway subprocess."""
+    _GATEWAY_TOKEN = os.environ.get("GATEWAY_TOKEN", "")
+    allow_all = os.environ.get("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("1", "true", "yes")
 
+    def _is_token_authed(ws: WebSocket) -> bool:
+        if not _GATEWAY_TOKEN:
+            return False
+        auth = ws.headers.get("authorization", "")
+        if auth.startswith("Bearer ") and auth[7:] == _GATEWAY_TOKEN:
+            return True
+        if ws.query_params.get("token") == _GATEWAY_TOKEN:
+            return True
+        return False
+
+    if not allow_all and not _is_authenticated(websocket) and not _is_token_authed(websocket):
+        await websocket.close(code=4401)
+        return
+
+    qs = websocket.url.query
+    upstream_url = f"ws://{HERMES_GATEWAY_HOST}:{HERMES_GATEWAY_PORT}"
+    if qs:
+        upstream_url = f"{upstream_url}?{qs}"
+
+    print(f"[ws-gateway] connecting to upstream: {upstream_url}", flush=True)
+
+    try:
+        upstream = await websockets.connect(upstream_url, open_timeout=5)
+    except Exception as e:
+        print(f"[ws-gateway] upstream connect failed: {e!r}", flush=True)
+        await websocket.close(code=1011)
+        return
+
+    await websocket.accept()
+
+    pump_in  = asyncio.create_task(_ws_pump_client_to_upstream(websocket, upstream))
+    pump_out = asyncio.create_task(_ws_pump_upstream_to_client(upstream, websocket))
+
+    try:
+        done, pending = await asyncio.wait(
+            (pump_in, pump_out),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+    finally:
+        try:
+            await upstream.close()
+        except Exception:
+            pass
+        if websocket.client_state == WebSocketState.CONNECTED:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
 
 async def ws_gateway(websocket: WebSocket) -> None:
     """Proxy /gateway WebSocket connections from Claw3D to the hermes gateway subprocess."""
@@ -1187,6 +1245,7 @@ routes = [
     WebSocketRoute("/api/ws",                   ws_proxy),
     WebSocketRoute("/api/events",               ws_proxy),
     WebSocketRoute("/gateway", ws_gateway),
+    WebSocketRoute("/gateway", ws_gateway_proxy),
 
     # Root: redirect to /setup if unconfigured, otherwise proxy the dashboard.
     Route("/",                                  route_root,          methods=ANY_METHOD),
