@@ -412,6 +412,7 @@ class Gateway:
             write_config_yaml(read_env(ENV_FILE))
             self.proc = await asyncio.create_subprocess_exec(
                 "hermes", "gateway",
+                "--port", str(HERMES_GATEWAY_PORT),  # ← add this line
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 env=env,
