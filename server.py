@@ -412,7 +412,7 @@ class Gateway:
             write_config_yaml(read_env(ENV_FILE))
             self.proc = await asyncio.create_subprocess_exec(
                 "hermes", "gateway",
-                "--port", str(HERMES_GATEWAY_PORT),  # ← add this line
+                "--port",  # ← add this line
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 env=env,
@@ -448,6 +448,7 @@ class Gateway:
         async for raw in self.proc.stdout:
             line = ANSI_ESCAPE.sub("", raw.decode(errors="replace").rstrip())
             self.logs.append(line)
+            print(f"[gateway-out] {line}", flush=True)  # ← add this line
         if self.state == "running":
             self.state = "error"
             self.logs.append(f"[error] Gateway exited (code {self.proc.returncode})")
